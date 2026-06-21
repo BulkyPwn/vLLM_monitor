@@ -1,4 +1,4 @@
-﻿"""
+"""
 vLLM Monitor - Backend Server
 Scrapes vLLM Prometheus metrics, serves a real-time dashboard,
 and simulates prefix cache hash chains for visualization.
@@ -307,7 +307,7 @@ mock_gen = MockMetricsGenerator()
 
 async def scrape_loop():
     global latest_raw_metrics, vllm_connected, last_error
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
         while True:
             try:
                 resp = await client.get(f"{VLLM_URL}/metrics")

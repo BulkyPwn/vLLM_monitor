@@ -1,0 +1,313 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>vLLM Monitor</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.8.5/dist/d3.min.js"></script>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-left">
+            <h1>vLLM Monitor</h1>
+            <span id="status-badge" class="badge badge-demo">Connecting...</span>
+        </div>
+        <div class="header-right">
+            <span id="demo-indicator" class="demo-indicator" style="display:none;">DEMO MODE</span>
+            <span id="last-update" class="last-update">--</span>
+        </div>
+    </header>
+
+    <!-- Tab Navigation -->
+    <nav class="tab-nav">
+        <button class="tab-btn active" data-tab="metrics">Metrics Dashboard</button>
+        <button class="tab-btn" data-tab="prefix-cache">Prefix Cache Hash Chain</button>
+    </nav>
+
+    <!-- Tab: Metrics Dashboard -->
+    <div id="tab-metrics" class="tab-content active">
+        <!-- System Stats Row -->
+        <div class="metrics-grid" id="system-grid">
+            <div class="metric-card">
+                <div class="metric-label">Running Requests</div>
+                <div class="metric-value" id="m-running">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Waiting Requests</div>
+                <div class="metric-value" id="m-waiting">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Swapped Requests</div>
+                <div class="metric-value" id="m-swapped">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">GPU KV Cache Usage</div>
+                <div class="metric-value" id="m-gpu-cache">--</div>
+                <div class="metric-bar"><div class="metric-bar-fill" id="m-gpu-cache-bar"></div></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">CPU KV Cache Usage</div>
+                <div class="metric-value" id="m-cpu-cache">--</div>
+                <div class="metric-bar"><div class="metric-bar-fill" id="m-cpu-cache-bar"></div></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">GPU Prefix Cache Hit Rate</div>
+                <div class="metric-value" id="m-gpu-hit">--</div>
+                <div class="metric-bar"><div class="metric-bar-fill green" id="m-gpu-hit-bar"></div></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">CPU Prefix Cache Hit Rate</div>
+                <div class="metric-value" id="m-cpu-hit">--</div>
+                <div class="metric-bar"><div class="metric-bar-fill green" id="m-cpu-hit-bar"></div></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Preemptions</div>
+                <div class="metric-value" id="m-preempt">--</div>
+            </div>
+        </div>
+
+        <!-- Token Stats -->
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Prompt Tokens (total)</div>
+                <div class="metric-value" id="m-prompt-tokens">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Generation Tokens (total)</div>
+                <div class="metric-value" id="m-gen-tokens">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Token Throughput</div>
+                <div class="metric-value" id="m-throughput">-- tok/s</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Completed Requests</div>
+                <div class="metric-value" id="m-success">--</div>
+            </div>
+        </div>
+
+        <!-- Time Series Charts -->
+        <div class="chart-section">
+            <h2>Request State Over Time</h2>
+            <div class="chart-container">
+                <canvas id="chart-requests"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-section">
+            <h2>Cache Usage Over Time</h2>
+            <div class="chart-container">
+                <canvas id="chart-cache"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-section">
+            <h2>Prefix Cache Hit Rate Over Time</h2>
+            <div class="chart-container">
+                <canvas id="chart-hitrate"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-section">
+            <h2>Token Throughput Over Time</h2>
+            <div class="chart-container">
+                <canvas id="chart-tokens"></canvas>
+            </div>
+        </div>
+
+        <!-- Latency Metrics -->
+        <h2 class="section-title">Latency Metrics (Percentiles)</h2>
+        <div class="latency-grid">
+            <div class="latency-card" id="card-ttft">
+                <h3>Time to First Token (TTFT)</h3>
+                <table class="latency-table">
+                    <tr><th>P50</th><th>P95</th><th>P99</th><th>Count</th></tr>
+                    <tr><td id="lat-ttft-p50">--</td><td id="lat-ttft-p95">--</td><td id="lat-ttft-p99">--</td><td id="lat-ttft-count">--</td></tr>
+                </table>
+            </div>
+            <div class="latency-card" id="card-tpot">
+                <h3>Time per Output Token (TPOT)</h3>
+                <table class="latency-table">
+                    <tr><th>P50</th><th>P95</th><th>P99</th><th>Count</th></tr>
+                    <tr><td id="lat-tpot-p50">--</td><td id="lat-tpot-p95">--</td><td id="lat-tpot-p99">--</td><td id="lat-tpot-count">--</td></tr>
+                </table>
+            </div>
+            <div class="latency-card" id="card-e2e">
+                <h3>E2E Request Latency</h3>
+                <table class="latency-table">
+                    <tr><th>P50</th><th>P95</th><th>P99</th><th>Count</th></tr>
+                    <tr><td id="lat-e2e_request-p50">--</td><td id="lat-e2e_request-p95">--</td><td id="lat-e2e_request-p99">--</td><td id="lat-e2e_request-count">--</td></tr>
+                </table>
+            </div>
+            <div class="latency-card" id="card-queue">
+                <h3>Queue Time</h3>
+                <table class="latency-table">
+                    <tr><th>P50</th><th>P95</th><th>P99</th><th>Count</th></tr>
+                    <tr><td id="lat-queue_time-p50">--</td><td id="lat-queue_time-p95">--</td><td id="lat-queue_time-p99">--</td><td id="lat-queue_time-count">--</td></tr>
+                </table>
+            </div>
+            <div class="latency-card" id="card-prefill">
+                <h3>Prefill Time</h3>
+                <table class="latency-table">
+                    <tr><th>P50</th><th>P95</th><th>P99</th><th>Count</th></tr>
+                    <tr><td id="lat-prefill_time-p50">--</td><td id="lat-prefill_time-p95">--</td><td id="lat-prefill_time-p99">--</td><td id="lat-prefill_time-count">--</td></tr>
+                </table>
+            </div>
+            <div class="latency-card" id="card-decode">
+                <h3>Decode Time</h3>
+                <table class="latency-table">
+                    <tr><th>P50</th><th>P95</th><th>P99</th><th>Count</th></tr>
+                    <tr><td id="lat-decode_time-p50">--</td><td id="lat-decode_time-p95">--</td><td id="lat-decode_time-p99">--</td><td id="lat-decode_time-count">--</td></tr>
+                </table>
+            </div>
+            <div class="latency-card" id="card-inference">
+                <h3>Inference Time</h3>
+                <table class="latency-table">
+                    <tr><th>P50</th><th>P95</th><th>P99</th><th>Count</th></tr>
+                    <tr><td id="lat-inference_time-p50">--</td><td id="lat-inference_time-p95">--</td><td id="lat-inference_time-p99">--</td><td id="lat-inference_time-count">--</td></tr>
+                </table>
+            </div>
+            <div class="latency-card" id="card-forward">
+                <h3>Model Forward Time (ms)</h3>
+                <table class="latency-table">
+                    <tr><th>P50</th><th>P95</th><th>P99</th><th>Count</th></tr>
+                    <tr><td id="lat-model_forward_ms-p50">--</td><td id="lat-model_forward_ms-p95">--</td><td id="lat-model_forward_ms-p99">--</td><td id="lat-model_forward_ms-count">--</td></tr>
+                </table>
+            </div>
+            <div class="latency-card" id="card-execute">
+                <h3>Model Execute Time (ms)</h3>
+                <table class="latency-table">
+                    <tr><th>P50</th><th>P95</th><th>P99</th><th>Count</th></tr>
+                    <tr><td id="lat-model_execute_ms-p50">--</td><td id="lat-model_execute_ms-p95">--</td><td id="lat-model_execute_ms-p99">--</td><td id="lat-model_execute_ms-count">--</td></tr>
+                </table>
+            </div>
+        </div>
+
+        <!-- Speculative Decoding -->
+        <h2 class="section-title">Speculative Decoding</h2>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Draft Acceptance Rate</div>
+                <div class="metric-value" id="m-spec-accept">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Spec Decode Efficiency</div>
+                <div class="metric-value" id="m-spec-eff">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Accepted Tokens</div>
+                <div class="metric-value" id="m-spec-accepted">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Draft Tokens</div>
+                <div class="metric-value" id="m-spec-draft">--</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Emitted Tokens</div>
+                <div class="metric-value" id="m-spec-emitted">--</div>
+            </div>
+        </div>
+
+        <!-- Request Distribution -->
+        <h2 class="section-title">Request Distribution</h2>
+        <div class="chart-row">
+            <div class="chart-section half">
+                <h3>Finish Reasons</h3>
+                <div class="chart-container"><canvas id="chart-finish-reasons"></canvas></div>
+            </div>
+            <div class="chart-section half">
+                <h3>Prompt Token Distribution</h3>
+                <div class="chart-container"><canvas id="chart-prompt-dist"></canvas></div>
+            </div>
+        </div>
+        <div class="chart-row">
+            <div class="chart-section half">
+                <h3>Generation Token Distribution</h3>
+                <div class="chart-container"><canvas id="chart-gen-dist"></canvas></div>
+            </div>
+            <div class="chart-section half">
+                <h3>Max Tokens Param Distribution</h3>
+                <div class="chart-container"><canvas id="chart-maxtokens-dist"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Prefix Cache Hash Chain -->
+    <div id="tab-prefix-cache" class="tab-content">
+        <div class="pc-layout">
+            <!-- Left: Input Panel -->
+            <div class="pc-input-panel">
+                <h2>Prefix Cache Simulator</h2>
+                <p class="pc-desc">
+                    Enter prompts to visualize how vLLM builds prefix cache hash chains.
+                    Each KV block (16 tokens) is hashed using its parent hash + block tokens.
+                    Shared prefixes merge into a tree structure.
+                </p>
+
+                <div class="pc-controls">
+                    <label>Block Size (tokens):</label>
+                    <input type="number" id="block-size" value="16" min="1" max="256">
+                    <button id="btn-simulate" class="btn-primary">Build Hash Chain</button>
+                    <button id="btn-load-example" class="btn-secondary">Load Example</button>
+                </div>
+
+                <div id="prompt-list" class="prompt-list">
+                    <!-- Prompts added dynamically -->
+                </div>
+                <button id="btn-add-prompt" class="btn-add">+ Add Prompt</button>
+
+                <!-- Stats -->
+                <div class="pc-stats" id="pc-stats" style="display:none;">
+                    <h3>Cache Statistics</h3>
+                    <div class="pc-stat-row">
+                        <span>Total Blocks Stored:</span>
+                        <strong id="pc-total-blocks">0</strong>
+                    </div>
+                    <div class="pc-stat-row">
+                        <span>Shared Blocks:</span>
+                        <strong id="pc-shared-blocks">0</strong>
+                    </div>
+                    <div class="pc-stat-row">
+                        <span>Unique Blocks:</span>
+                        <strong id="pc-unique-blocks">0</strong>
+                    </div>
+                    <div class="pc-stat-row">
+                        <span>Total Prompt Blocks:</span>
+                        <strong id="pc-prompt-blocks">0</strong>
+                    </div>
+                    <div class="pc-stat-row">
+                        <span>Saved Blocks (Cache Hits):</span>
+                        <strong id="pc-saved-blocks">0</strong>
+                    </div>
+                    <div class="pc-stat-row highlight">
+                        <span>Estimated Hit Rate:</span>
+                        <strong id="pc-hit-rate">0%</strong>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Tree Visualization -->
+            <div class="pc-viz-panel">
+                <div class="pc-viz-header">
+                    <h2>Hash Chain Tree</h2>
+                    <div class="pc-legend">
+                        <span class="legend-item"><span class="legend-dot shared"></span> Shared (cached)</span>
+                        <span class="legend-item"><span class="legend-dot unique"></span> Unique</span>
+                        <span class="legend-item"><span class="legend-dot root"></span> Root</span>
+                    </div>
+                </div>
+                <div id="hash-chain-viz" class="hash-chain-viz">
+                    <div class="pc-placeholder">Enter prompts and click "Build Hash Chain" to visualize</div>
+                </div>
+                <div id="pc-tooltip" class="pc-tooltip" style="display:none;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+    <script src="/static/js/hashchain.js"></script>
+</body>
+</html>

@@ -155,7 +155,8 @@
   }
 
   function updateDashboard(data, connected) {
-    if(!data||!data.system) return;
+    if(!data||!data.system){try{hideLoading()}catch(e){};return}
+    try {
     var s=data.system, t=data.tokens, pc=data.prefix_cache, sd=data.spec_decode, lat=data.latency, req=data.requests;
     var now = new Date().toLocaleTimeString();
 
@@ -209,7 +210,7 @@
     setText('m-spec-draft',fmt(sd.num_draft,0));
     setText('m-spec-emitted',fmt(sd.num_emitted,0));
 
-    if(req.success_by_reason&&Object.keys(req.success_by_reason).length>0){
+    if(charts.finishReasons&&req.success_by_reason&&Object.keys(req.success_by_reason).length>0){
       charts.finishReasons.data.labels=Object.keys(req.success_by_reason);
       charts.finishReasons.data.datasets[0].data=Object.values(req.success_by_reason);
       try{charts.finishReasons.update('none')}catch(e){}
@@ -225,9 +226,14 @@
     fillHist(charts.promptDist,req.prompt_tokens_hist);
     fillHist(charts.genDist,req.gen_tokens_hist);
     fillHist(charts.maxTokensDist,req.params_max_tokens_hist);
+    }catch(e){console.error('updateDashboard:',e)}
     updateStatus(connected);
+    hideLoading();
+  }
+
+  function hideLoading(){
     var lo = document.getElementById('loading-overlay');
-    if(lo){lo.style.opacity='0';setTimeout(function(){if(lo)lo.style.display='none'},500)}
+    if(lo)lo.style.display='none';
   }
 
   function updateStatus(connected) {

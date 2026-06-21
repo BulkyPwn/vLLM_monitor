@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // vLLM Monitor - Prefix Cache Hash Chain Visualizer
 // ============================================================
 
@@ -285,6 +285,91 @@ function renderTree(data) {
 window.addEventListener('resize', () => {
     const placeholder = document.querySelector('#hash-chain-viz .pc-placeholder');
     if (!placeholder && document.getElementById('pc-stats').style.display !== 'none') {
-        simulate();
+        const isLive = document.getElementById('panel-live').style.display !== 'none';
+        if (isLive) {
+            fetchLiveHashChain();
+        } else {
+            simulate();
+        }
     }
 });
+
+// ============================================================
+// Live KV Events Mode
+// ============================================================
+
+let livePollTimer = null;
+
+document.getElementById('btn-mode-simulate').addEventListener('click', () => {
+    document.getElementById('btn-mode-simulate').classList.add('active');
+    document.getElementById('btn-mode-live').classList.remove('active');
+    document.getElementById('panel-simulate').style.display = 'block';
+    document.getElementById('panel-live').style.display = 'none';
+    document.getElementById('pc-stats').style.display = 'none';
+    document.getElementById('hash-chain-viz').innerHTML = '<div class="pc-placeholder">Enter prompts and click Build Hash Chain</div>';
+    const rowPrompt = document.getElementById('row-prompt-blocks');
+    const rowSaved = document.getElementById('row-saved-blocks');
+    if (rowPrompt) rowPrompt.style.display = '';
+    if (rowSaved) rowSaved.style.display = '';
+    if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; }
+});
+
+document.getElementById('btn-mode-live').addEventListener('click', () => {
+    document.getElementById('btn-mode-live').classList.add('active');
+    document.getElementById('btn-mode-simulate').classList.remove('active');
+    document.getElementById('panel-simulate').style.display = 'none';
+    document.getElementById('panel-live').style.display = 'block';
+    document.getElementById('pc-stats').style.display = 'none';
+    document.getElementById('hash-chain-viz').innerHTML = '<div class="pc-placeholder">Connecting to KV events...</div>';
+    const rowPrompt = document.getElementById('row-prompt-blocks');
+    const rowSaved = document.getElementById('row-saved-blocks');
+    if (rowPrompt) rowPrompt.style.display = 'none';
+    if (rowSaved) rowSaved.style.display = 'none';
+    fetchLiveHashChain();
+    livePollTimer = setInterval(fetchLiveHashChain, 3000);
+});
+
+document.getElementById('btn-live-refresh').addEventListener('click', fetchLiveHashChain);
+
+async function fetchLiveHashChain() {
+    try {
+        const resp = await fetch('/api/prefix-cache/live');
+        const data = await resp.json();
+
+        const statusEl = document.getElementById('live-status');
+        if (data.error) {
+            if (statusEl) statusEl.textContent = 'Error: ' + data.error;
+            return;
+        }
+
+        if (statusEl) {
+            const count = data.block_count || 0;
+            statusEl.textContent = count + ' blocks captured';
+        }
+
+        if (!data.nodes || data.nodes.length === 0) {
+            document.getElementById('hash-chain-viz').innerHTML =
+                '<div class="pc-placeholder">Waiting for KV events...<br><small>Send inference requests to vLLM to populate the cache.</small></div>';
+            document.getElementById('pc-stats').style.display = 'none';
+            return;
+        }
+
+        // Adapt stats for live mode
+        const stats = data.stats || {};
+        const liveStats = {
+            total_blocks: stats.total_blocks || 0,
+            shared_blocks: stats.shared_blocks || 0,
+            unique_blocks: stats.unique_blocks || 0,
+            total_prompt_blocks: stats.total_prompt_blocks || 0,
+            saved_blocks: stats.saved_blocks || 0,
+            estimated_hit_rate: stats.shared_blocks > 0 && stats.total_blocks > 0
+                ? stats.shared_blocks / stats.total_blocks : 0,
+        };
+        renderStats(liveStats);
+        renderTree(data);
+    } catch (e) {
+        console.error('Live fetch error:', e);
+        const statusEl = document.getElementById('live-status');
+        if (statusEl) statusEl.textContent = 'Connection error - check KV events endpoint';
+    }
+}

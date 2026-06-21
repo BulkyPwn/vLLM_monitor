@@ -7,15 +7,22 @@ Usage:
     pip install -r requirements.txt
     python server.py --vllm-url http://localhost:8000 --port 7860
 """
-import argparse, asyncio, hashlib, json, math, random, re, time
+import argparse, asyncio, hashlib, json, math, random, re, struct, time
 from collections import deque
 from pathlib import Path
 from typing import Any
+
 import httpx, uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client.parser import text_string_to_metric_families
+
+try:
+    import zmq
+    HAS_ZMQ = True
+except ImportError:
+    HAS_ZMQ = False
 
 app = FastAPI(title="vLLM Monitor")
 STATIC_DIR = Path(__file__).parent / "static"
@@ -25,12 +32,18 @@ VLLM_URL = "http://localhost:8000"
 POLL_INTERVAL = 2.0
 MAX_HISTORY = 300
 BLOCK_SIZE = 16
+KV_EVENTS_ENDPOINT = None   # "tcp://host:5557" to enable live KV events
 
 metrics_history: deque = deque(maxlen=MAX_HISTORY)
 latest_raw_metrics: dict = {}
 connected_clients: set = set()
 vllm_connected: bool = False
 last_error: str = ""
+
+# KV Events live hash chain state
+kv_events_enabled: bool = False
+kv_events_block_map: dict = {}   # block_hash (16-byte bytes) -> node info
+kv_events_root_hashes: set = set()  # blocks with no parent
 
 # ---------------------------------------------------------------------------
 # Prometheus metrics parsing
@@ -454,6 +467,204 @@ def build_hash_chain(prompts: list, block_size: int = BLOCK_SIZE,
 
 
 # ---------------------------------------------------------------------------
+# KV Events live hash chain (ZMQ subscriber)
+# ---------------------------------------------------------------------------
+
+def _zmq_listener():
+    """ZMQ SUB listener for vLLM kv-events topic (runs in a daemon thread).
+    Parses BlockStored / BlockRemoved / AllBlocksCleared events and
+    maintains a real-time hash chain tree.
+    """
+    global kv_events_enabled
+    if not HAS_ZMQ or not KV_EVENTS_ENDPOINT:
+        return
+
+    print(f"[kv-events] Connecting to {KV_EVENTS_ENDPOINT} ...")
+    ctx = zmq.Context()
+    sub = ctx.socket(zmq.SUB)
+    try:
+        sub.connect(KV_EVENTS_ENDPOINT)
+    except Exception as e:
+        print(f"[kv-events] Failed to connect: {e}")
+        return
+
+    sub.setsockopt_string(zmq.SUBSCRIBE, "kv-events")
+    kv_events_enabled = True
+    print(f"[kv-events] Listening on topic 'kv-events'")
+
+    while kv_events_enabled:
+        try:
+            if sub.poll(500):
+                parts = sub.recv_multipart()
+                # parts: [topic_bytes, seq_bytes, payload_bytes]
+                if len(parts) < 3:
+                    continue
+                payload = parts[2]
+                _process_kv_event_bytes(payload)
+        except Exception as e:
+            print(f"[kv-events] Error: {e}")
+            break
+
+    sub.close()
+    ctx.term()
+
+
+def _process_kv_event_bytes(payload: bytes):
+    """Parse a msgpack-encoded KVEventBatch from vLLM.
+    Event structure (manually decoded without msgspec dependency):
+      - ts: float64
+      - events_count: uint32
+      - events: list of tagged unions
+    We use a simple heuristic decoder since the struct layout is stable.
+    """
+    import sys
+    global kv_events_block_map, kv_events_root_hashes
+
+    try:
+        msg = json.loads(payload.decode(errors="replace"))
+    except Exception:
+        # Not JSON — try crude binary decode for BlockStored tokens
+        try:
+            text = payload.decode("utf-8", errors="replace")
+        except Exception:
+            return
+
+        # Extract numeric arrays from raw repr
+        token_ids = _extract_array(text, "token_ids")
+        block_hashes = _extract_array(text, "block_hashes")
+        parent_hash = None
+        block_size = 16
+
+        if "parent_block_hash" in text:
+            m = re.search(r"parent_block_hash[=:]\s*(-?\d+)", text)
+            if m:
+                parent_hash = m.group(1)
+
+        if "AllBlocksCleared" in text:
+            kv_events_block_map.clear()
+            kv_events_root_hashes.clear()
+            print("[kv-events] All blocks cleared")
+            return
+
+        if not token_ids or not block_hashes:
+            return
+
+        for i, bh in enumerate(block_hashes):
+            hkey = str(bh)
+            if hkey not in kv_events_block_map:
+                kv_events_block_map[hkey] = {
+                    "id": hkey,
+                    "parent": str(parent_hash) if parent_hash is not None else None,
+                    "token_ids": token_ids,
+                    "ref_count": 0,
+                    "is_root": parent_hash is None,
+                }
+                if parent_hash is None:
+                    kv_events_root_hashes.add(hkey)
+            kv_events_block_map[hkey]["ref_count"] += 1
+        return
+
+    # JSON path (some newer vLLM versions use JSON)
+    if "AllBlocksCleared" in str(msg):
+        kv_events_block_map.clear()
+        kv_events_root_hashes.clear()
+        return
+
+    events = msg.get("events", [])
+    for evt in events:
+        etype = evt.get("type", evt.get("__type__", ""))
+        if "BlockStored" in etype:
+            bhs = evt.get("block_hashes", [])
+            parent = evt.get("parent_block_hash")
+            for bh in bhs:
+                hkey = str(bh)
+                if hkey not in kv_events_block_map:
+                    kv_events_block_map[hkey] = {
+                        "id": hkey,
+                        "parent": str(parent) if parent is not None else None,
+                        "ref_count": 0,
+                        "is_root": parent is None,
+                    }
+                    if parent is None:
+                        kv_events_root_hashes.add(hkey)
+                kv_events_block_map[hkey]["ref_count"] += 1
+        elif "BlockRemoved" in etype:
+            bhs = evt.get("block_hashes", [])
+            for bh in bhs:
+                hkey = str(bh)
+                if hkey in kv_events_block_map:
+                    kv_events_block_map[hkey]["ref_count"] = max(
+                        0, kv_events_block_map[hkey]["ref_count"] - 1)
+        elif "AllBlocksCleared" in etype:
+            kv_events_block_map.clear()
+            kv_events_root_hashes.clear()
+
+
+def _extract_array(text: str, key: str) -> list:
+    """Extract a bracketed numeric array from text repr."""
+    m = re.search(rf"{re.escape(key)}\s*[=:]\s*\[([^\]]*)\]", text)
+    if not m:
+        return []
+    return [int(x.strip()) for x in m.group(1).split(",") if x.strip().lstrip("-").isdigit()]
+
+
+def get_live_hash_chain() -> dict:
+    """Build tree representation from live KV events data."""
+    nodes = []
+    for hkey, block in kv_events_block_map.items():
+        nodes.append({
+            "id": hkey,
+            "parent": block["parent"],
+            "ref_count": block["ref_count"],
+            "is_root": block["is_root"],
+            "is_shared": block["ref_count"] > 1,
+            "token_text": block.get("token_ids", []),
+        })
+        if block["parent"] and block["parent"] in kv_events_block_map:
+            nodes.append({
+                "id": block["parent"],
+                "ref_count": 0,
+                "is_root": kv_events_block_map[block["parent"]]["is_root"],
+            })
+
+    # Deduplicate
+    seen = {}
+    deduped = []
+    for n in nodes:
+        if n["id"] not in seen:
+            seen[n["id"]] = n
+        else:
+            seen[n["id"]]["ref_count"] = max(seen[n["id"]].get("ref_count", 0), n.get("ref_count", 0))
+            seen[n["id"]]["is_shared"] = seen[n["id"]].get("is_shared", False) or n.get("is_shared", False)
+    deduped = list(seen.values())
+
+    edges = []
+    for hkey, block in kv_events_block_map.items():
+        if block["parent"] and block["parent"] in kv_events_block_map:
+            edges.append({"source": block["parent"], "target": hkey})
+
+    total = len(deduped)
+    shared = sum(1 for n in deduped if n.get("is_shared"))
+
+    return {
+        "nodes": deduped,
+        "edges": edges,
+        "chains": [],
+        "live": True,
+        "block_count": len(kv_events_block_map),
+        "stats": {
+            "total_blocks": total,
+            "shared_blocks": shared,
+            "unique_blocks": total - shared,
+            "total_prompt_blocks": total,
+            "saved_blocks": 0,
+            "estimated_hit_rate": 0,
+            "block_size": BLOCK_SIZE,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # API Routes
 # ---------------------------------------------------------------------------
 
@@ -496,6 +707,17 @@ async def simulate_prefix_cache(body: dict):
     result = build_hash_chain(prompts, block_size, lora_ids)
     return JSONResponse(result)
 
+@app.get("/api/prefix-cache/live")
+async def get_live_hash_chain():
+    """Get the real-time hash chain tree built from KV cache events."""
+    if not kv_events_enabled:
+        return JSONResponse({
+            "error": "KV events not enabled. Start vLLM with "
+                     "--kv-events-config and run monitor with --kv-events-endpoint."
+        }, status_code=503)
+    return JSONResponse(get_live_hash_chain())
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
@@ -516,6 +738,10 @@ async def websocket_endpoint(ws: WebSocket):
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(scrape_loop())
+    if KV_EVENTS_ENDPOINT:
+        import threading
+        t = threading.Thread(target=_zmq_listener, daemon=True)
+        t.start()
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -527,15 +753,22 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind")
     parser.add_argument("--port", type=int, default=7860, help="Port to bind")
     parser.add_argument("--poll-interval", type=float, default=2.0, help="Poll interval seconds")
+    parser.add_argument("--kv-events-endpoint", default=None,
+                        help="vLLM ZMQ KV events endpoint (e.g. tcp://10.74.99.215:5557)")
     args = parser.parse_args()
 
     VLLM_URL = args.vllm_url.rstrip("/")
     POLL_INTERVAL = args.poll_interval
+    KV_EVENTS_ENDPOINT = args.kv_events_endpoint
 
     print(f"vLLM Monitor starting...")
     print(f"  vLLM URL: {VLLM_URL}")
     print(f"  Dashboard: http://localhost:{args.port}")
     print(f"  Poll interval: {POLL_INTERVAL}s")
+    if KV_EVENTS_ENDPOINT:
+        print(f"  KV Events: {KV_EVENTS_ENDPOINT}")
+    elif HAS_ZMQ:
+        print(f"  KV Events: disabled (use --kv-events-endpoint to enable)")
     if VLLM_URL == "http://localhost:8000":
         print(f"  (Demo mode activates if vLLM is not reachable)")
 

@@ -1,4 +1,4 @@
-﻿:root {
+:root {
     --bg: #0f1117;
     --bg-card: #1a1d29;
     --bg-card-hover: #222636;
@@ -295,6 +295,39 @@ body {
     transition: all 0.2s;
 }
 .btn-add:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Mode Toggle */
+.pc-mode-toggle {
+    display: flex;
+    gap: 0;
+    margin-bottom: 16px;
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+.btn-mode {
+    flex: 1;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.2s;
+}
+.btn-mode.active {
+    background: var(--accent);
+    color: #fff;
+}
+.btn-mode:hover:not(.active) {
+    background: var(--bg-card-hover);
+    color: var(--text);
+}
+.live-status-text {
+    font-size: 13px;
+    color: var(--text-dim);
+    padding: 8px 0;
+}
 
 /* PC Stats */
 .pc-stats {

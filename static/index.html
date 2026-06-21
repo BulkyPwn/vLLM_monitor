@@ -56,23 +56,47 @@
 <div id="tab-prefix-cache" class="tab-content">
   <div class="pc-layout">
     <div class="pc-input-panel">
-      <h2>Prefix Cache Simulator</h2>
-      <p class="pc-desc">Enter prompts to visualize vLLM prefix cache hash chain tree. Block hash = sha256(parent + block_tokens). Shared prefixes merge into tree structure.</p>
-      <div class="pc-controls">
-        <label>Block Size:</label>
-        <input type="number" id="block-size" value="16" min="1" max="256">
-        <button id="btn-simulate" class="btn-primary">Build Hash Chain</button>
-        <button id="btn-load-example" class="btn-secondary">Load Example</button>
+      <div class="pc-mode-toggle">
+        <button id="btn-mode-simulate" class="btn-mode active">Simulate</button>
+        <button id="btn-mode-live" class="btn-mode">Live (KV Events)</button>
       </div>
-      <div id="prompt-list" class="prompt-list"></div>
-      <button id="btn-add-prompt" class="btn-add">+ Add Prompt</button>
+
+      <!-- Simulate Panel -->
+      <div id="panel-simulate">
+        <h2>Prefix Cache Simulator</h2>
+        <p class="pc-desc">Enter prompts to visualize vLLM prefix cache hash chain tree. Block hash = sha256(parent + block_tokens). Shared prefixes merge into tree structure.</p>
+        <div class="pc-controls">
+          <label>Block Size:</label>
+          <input type="number" id="block-size" value="16" min="1" max="256">
+          <button id="btn-simulate" class="btn-primary">Build Hash Chain</button>
+          <button id="btn-load-example" class="btn-secondary">Load Example</button>
+        </div>
+        <div id="prompt-list" class="prompt-list"></div>
+        <button id="btn-add-prompt" class="btn-add">+ Add Prompt</button>
+      </div>
+
+      <!-- Live Panel -->
+      <div id="panel-live" style="display:none">
+        <h2>Live KV Events Monitor</h2>
+        <p class="pc-desc">Real-time hash chain built from vLLM ZMQ KV events. Requires vLLM started with <code>--kv-events-config</code>.</p>
+        <div class="pc-controls">
+          <button id="btn-live-refresh" class="btn-primary">Refresh</button>
+          <span id="live-status" class="live-status-text">Waiting for events...</span>
+        </div>
+        <p class="pc-desc" style="font-size:12px;margin-top:8px;">
+          vLLM must be started with:<br>
+          <code>--kv-events-config '{"enable_kv_cache_events":"True","publisher":"zmq","topic":"kv-events"}'</code>
+        </p>
+      </div>
+
+      <!-- Stats (shared) -->
       <div class="pc-stats" id="pc-stats" style="display:none">
         <h3>Cache Statistics</h3>
         <div class="pc-stat-row"><span>Total Blocks Stored:</span><strong id="pc-total-blocks">0</strong></div>
         <div class="pc-stat-row"><span>Shared Blocks:</span><strong id="pc-shared-blocks">0</strong></div>
         <div class="pc-stat-row"><span>Unique Blocks:</span><strong id="pc-unique-blocks">0</strong></div>
-        <div class="pc-stat-row"><span>Total Prompt Blocks:</span><strong id="pc-prompt-blocks">0</strong></div>
-        <div class="pc-stat-row"><span>Saved Blocks:</span><strong id="pc-saved-blocks">0</strong></div>
+        <div class="pc-stat-row" id="row-prompt-blocks"><span>Total Prompt Blocks:</span><strong id="pc-prompt-blocks">0</strong></div>
+        <div class="pc-stat-row" id="row-saved-blocks"><span>Saved Blocks:</span><strong id="pc-saved-blocks">0</strong></div>
         <div class="pc-stat-row highlight"><span>Estimated Hit Rate:</span><strong id="pc-hit-rate">0%</strong></div>
       </div>
     </div>

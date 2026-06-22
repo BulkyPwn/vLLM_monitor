@@ -369,7 +369,7 @@ function renderTree(data) {
             decodedHtml = '<div style="margin-bottom:4px;max-width:400px;word-wrap:break-word;color:#a78bfa"><strong>Decoded:</strong> ' + decoded + '</div>';
         }
         tooltip.innerHTML = `
-            <div style="color:#a78bfa;margin-bottom:4px;">Block #${d.data.block_index || '?'}</div>
+            <div style="color:#a78bfa;margin-bottom:4px;">Block #${d.data.block_index != null ? d.data.block_index : '?'}</div>
             <div style="margin-bottom:4px;"><strong>Hash:</strong> ${d.data.id}</div>
             ${decodedHtml}
             <div style="margin-bottom:4px;"><strong>Token IDs:</strong> ${tokens}</div>
@@ -473,8 +473,10 @@ function renderLRUQueue(data) {
     const nodeMap = {};
     nodes.forEach(n => { nodeMap[n.id] = n; });
 
-    // Compute LRU order
-    const lruOrder = computeLRUOrder(nodes, data.edges || [], data.chains || []);
+    // Compute LRU order (prefer server-provided order for live mode)
+    const lruOrder = data.lru_order
+        ? data.lru_order
+        : computeLRUOrder(nodes, data.edges || [], data.chains || []);
     const total = lruOrder.length;
 
     // Head 10 + tail 10

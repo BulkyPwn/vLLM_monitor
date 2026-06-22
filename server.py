@@ -92,6 +92,7 @@ last_error: str = ""
 kv_events_enabled: bool = False
 kv_events_block_map: dict = {}   # block_hash (16-byte bytes) -> node info
 kv_events_root_hashes: set = set()  # blocks with no parent
+kv_events_lru_order: list = []   # [LRU, ..., MRU] block hash strings, tracked from BlockStored events
 
 # ---------------------------------------------------------------------------
 # Prometheus metrics parsing
@@ -606,7 +607,7 @@ def _zmq_listener():
 
 def _process_kv_event(payload: bytes):
     """Decode msgpack KVEventBatch and update hash chain state."""
-    global kv_events_block_map, kv_events_root_hashes
+    global kv_events_block_map, kv_events_root_hashes, kv_events_lru_order
 
     try:
         batch: KVEventBatch = _kv_decoder.decode(payload)
@@ -620,6 +621,7 @@ def _process_kv_event(payload: bytes):
         if isinstance(event, AllBlocksCleared):
             kv_events_block_map.clear()
             kv_events_root_hashes.clear()
+            kv_events_lru_order.clear()
             logger.info("[kv-events] Event: AllBlocksCleared")
             _write_kv_event_log({"type": "AllBlocksCleared"})
 
@@ -646,6 +648,10 @@ def _process_kv_event(payload: bytes):
                     if parent is None:
                         kv_events_root_hashes.add(hkey)
                 kv_events_block_map[hkey]["ref_count"] += 1
+                # Move to MRU: remove existing, then append to end
+                if hkey in kv_events_lru_order:
+                    kv_events_lru_order.remove(hkey)
+                kv_events_lru_order.append(hkey)
             stored += len(event.block_hashes)
             _write_kv_event_log({
                 "type": "BlockStored",
@@ -662,6 +668,11 @@ def _process_kv_event(payload: bytes):
                     kv_events_block_map[hkey]["ref_count"] = max(
                         0, kv_events_block_map[hkey]["ref_count"] - 1)
             removed += len(event.block_hashes)
+            # Remove evicted blocks from LRU order
+            for bh in event.block_hashes:
+                hkey = str(bh)
+                if hkey in kv_events_lru_order:
+                    kv_events_lru_order.remove(hkey)
             _write_kv_event_log({
                 "type": "BlockRemoved",
                 "block_hashes": event.block_hashes,
@@ -684,7 +695,7 @@ def _write_kv_event_log(event_dict: dict):
 
 def _restore_from_kv_log():
     """Read kv_events.jsonl and replay events to rebuild in-memory state."""
-    global kv_events_block_map, kv_events_root_hashes, kv_events_enabled
+    global kv_events_block_map, kv_events_root_hashes, kv_events_enabled, kv_events_lru_order
 
     if not KV_EVENTS_LOG.exists():
         return
@@ -706,6 +717,7 @@ def _restore_from_kv_log():
                 if etype == "AllBlocksCleared":
                     kv_events_block_map.clear()
                     kv_events_root_hashes.clear()
+                    kv_events_lru_order.clear()
                     restored += 1
 
                 elif etype == "BlockStored":
@@ -726,6 +738,10 @@ def _restore_from_kv_log():
                             if parent is None:
                                 kv_events_root_hashes.add(hkey)
                         kv_events_block_map[hkey]["ref_count"] += 1
+                        # Replay LRU: move to end (MRU)
+                        if hkey in kv_events_lru_order:
+                            kv_events_lru_order.remove(hkey)
+                        kv_events_lru_order.append(hkey)
                         restored += 1
 
                 elif etype == "BlockRemoved":
@@ -734,6 +750,8 @@ def _restore_from_kv_log():
                         if hkey in kv_events_block_map:
                             kv_events_block_map[hkey]["ref_count"] = max(
                                 0, kv_events_block_map[hkey]["ref_count"] - 1)
+                            if hkey in kv_events_lru_order:
+                                kv_events_lru_order.remove(hkey)
                             restored += 1
 
     except Exception as e:
@@ -747,6 +765,20 @@ def _restore_from_kv_log():
 
 def _build_live_hash_chain() -> dict:
     """Build tree representation from live KV events data."""
+    # Compute depth (block_index) for each block by walking parent links
+    depth_cache: dict = {}
+
+    def get_depth(hkey: str) -> int:
+        if hkey in depth_cache:
+            return depth_cache[hkey]
+        block = kv_events_block_map.get(hkey)
+        if not block or block["is_root"]:
+            depth_cache[hkey] = 0
+        else:
+            parent = block.get("parent")
+            depth_cache[hkey] = get_depth(parent) + 1 if parent and parent in kv_events_block_map else 0
+        return depth_cache[hkey]
+
     nodes = []
     for hkey, block in kv_events_block_map.items():
         token_ids = block.get("token_ids", [])
@@ -764,6 +796,7 @@ def _build_live_hash_chain() -> dict:
             "is_shared": block["ref_count"] > 1,
             "token_text": token_ids,
             "token_text_decoded": decoded,
+            "block_index": get_depth(hkey),
         })
 
     edges = []
@@ -778,6 +811,7 @@ def _build_live_hash_chain() -> dict:
         "nodes": nodes,
         "edges": edges,
         "chains": [],
+        "lru_order": list(kv_events_lru_order),  # [LRU, ..., MRU]
         "live": True,
         "block_count": len(kv_events_block_map),
         "stats": {

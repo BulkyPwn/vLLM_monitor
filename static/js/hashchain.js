@@ -253,11 +253,17 @@ function renderTree(data) {
     nodeG.on('mouseover', function(event, d) {
         const tooltip = document.getElementById('pc-tooltip');
         const tokens = (d.data.token_text || []).join(' ');
+        const decoded = d.data.token_text_decoded || '';
         const pids = (d.data.prompt_ids || []).map(p => `Prompt ${p + 1}`);
+        var decodedHtml = '';
+        if (decoded) {
+            decodedHtml = '<div style="margin-bottom:4px;max-width:400px;word-wrap:break-word;color:#a78bfa"><strong>Decoded:</strong> ' + decoded + '</div>';
+        }
         tooltip.innerHTML = `
             <div style="color:#a78bfa;margin-bottom:4px;">Block #${d.data.block_index || '?'}</div>
             <div style="margin-bottom:4px;"><strong>Hash:</strong> ${d.data.id}</div>
-            <div style="margin-bottom:4px;"><strong>Tokens:</strong> ${tokens}</div>
+            ${decodedHtml}
+            <div style="margin-bottom:4px;"><strong>Token IDs:</strong> ${tokens}</div>
             <div style="margin-bottom:4px;"><strong>Ref Count:</strong> ${d.data.ref_count}</div>
             <div><strong>Used by:</strong> ${pids.join(', ')}</div>
             <div style="margin-top:4px;color:${d.data.is_shared?'#22c55e':'#7c5cfc'}">

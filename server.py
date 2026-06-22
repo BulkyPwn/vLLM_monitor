@@ -31,10 +31,22 @@ try:
 except ImportError:
     HAS_MSGSPEC = False
 
+try:
+    from tokenizers import Tokenizer as HFTokenizer
+    HAS_TOKENIZERS = True
+except ImportError:
+    HAS_TOKENIZERS = False
+
+_tokenizer = None  # loaded from --tokenizer-path
+
 app = FastAPI(title="vLLM Monitor")
 STATIC_DIR = Path(__file__).parent / "static"
 LOG_DIR = STATIC_DIR.parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
+
+# Truncate logs on startup
+for _logfile in (LOG_DIR / "monitor.log", LOG_DIR / "frontend.log"):
+    _logfile.write_text("", encoding="utf-8")
 
 # --- Logger setup ---
 logger = logging.getLogger("vllm_monitor")
@@ -66,7 +78,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 VLLM_URL = "http://localhost:8000"
 POLL_INTERVAL = 5.0
 MAX_HISTORY = 300
-BLOCK_SIZE = 16
+BLOCK_SIZE = 2048
 KV_EVENTS_ENDPOINT = None   # "tcp://host:5557" to enable live KV events
 
 metrics_history: deque = deque(maxlen=MAX_HISTORY)
@@ -525,7 +537,7 @@ if HAS_MSGSPEC:
         block_hashes: list[int]
         parent_block_hash: int | None = None
         token_ids: list[int] = []
-        block_size: int = 16
+        block_size: int = 2048
         lora_id: int | None = None
 
     class BlockRemoved(KVCacheEvent):
@@ -607,10 +619,18 @@ def _process_kv_event(payload: bytes):
         if isinstance(event, AllBlocksCleared):
             kv_events_block_map.clear()
             kv_events_root_hashes.clear()
-            logger.info("[kv-events] All blocks cleared")
+            logger.info("[kv-events] Event: AllBlocksCleared")
 
         elif isinstance(event, BlockStored):
             parent = event.parent_block_hash
+            logger.info(
+                f"[kv-events] Event: BlockStored "
+                f"parent={parent}, "
+                f"hashes={event.block_hashes[:3]}{'...' if len(event.block_hashes) > 3 else ''}, "
+                f"token_count={len(event.token_ids)}, "
+                f"block_size={event.block_size}, "
+                f"lora_id={event.lora_id}"
+            )
             for bh in event.block_hashes:
                 hkey = str(bh)
                 if hkey not in kv_events_block_map:
@@ -627,6 +647,7 @@ def _process_kv_event(payload: bytes):
             stored += len(event.block_hashes)
 
         elif isinstance(event, BlockRemoved):
+            logger.info(f"[kv-events] Event: BlockRemoved hashes={event.block_hashes}")
             for bh in event.block_hashes:
                 hkey = str(bh)
                 if hkey in kv_events_block_map:
@@ -643,13 +664,21 @@ def _build_live_hash_chain() -> dict:
     """Build tree representation from live KV events data."""
     nodes = []
     for hkey, block in kv_events_block_map.items():
+        token_ids = block.get("token_ids", [])
+        decoded = ""
+        if _tokenizer and token_ids:
+            try:
+                decoded = _tokenizer.decode(token_ids)
+            except Exception:
+                decoded = ""
         nodes.append({
             "id": hkey,
             "parent": block["parent"],
             "ref_count": block["ref_count"],
             "is_root": block["is_root"],
             "is_shared": block["ref_count"] > 1,
-            "token_text": block.get("token_ids", []),
+            "token_text": token_ids,
+            "token_text_decoded": decoded,
         })
 
     edges = []
@@ -795,11 +824,24 @@ if __name__ == "__main__":
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Poll interval seconds")
     parser.add_argument("--kv-events-endpoint", default=None,
                         help="vLLM ZMQ KV events endpoint (e.g. tcp://10.74.99.215:5557)")
+    parser.add_argument("--tokenizer-path", default=None,
+                        help="Path to tokenizer.json for decoding token IDs (e.g. /model/tokenizer.json)")
     args = parser.parse_args()
 
     VLLM_URL = args.vllm_url.rstrip("/")
     POLL_INTERVAL = args.poll_interval
     KV_EVENTS_ENDPOINT = args.kv_events_endpoint
+
+    # Load tokenizer for token decoding
+    if args.tokenizer_path:
+        if HAS_TOKENIZERS:
+            try:
+                _tokenizer = HFTokenizer.from_file(args.tokenizer_path)
+                logger.info(f"Tokenizer loaded from {args.tokenizer_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load tokenizer: {e}")
+        else:
+            logger.warning("tokenizers library not installed. Run: pip install tokenizers")
 
     logger.info("vLLM Monitor starting...")
     logger.info(f"  vLLM URL: {VLLM_URL}")

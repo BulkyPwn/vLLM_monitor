@@ -67,7 +67,7 @@
         <p class="pc-desc">Enter prompts to visualize vLLM prefix cache hash chain tree. Block hash = sha256(parent + block_tokens). Shared prefixes merge into tree structure.</p>
         <div class="pc-controls">
           <label>Block Size:</label>
-          <input type="number" id="block-size" value="16" min="1" max="256">
+          <input type="number" id="block-size" value="2048" min="1" max="65536">
           <button id="btn-simulate" class="btn-primary">Build Hash Chain</button>
           <button id="btn-load-example" class="btn-secondary">Load Example</button>
         </div>

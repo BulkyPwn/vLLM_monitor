@@ -91,9 +91,99 @@ function renderStats(stats) {
 // ============================================================
 // D3 Tree Rendering
 // ============================================================
+let selectedNodeData = null;
+
+function showBlockDetail(d) {
+    const panel = document.getElementById('block-detail-panel');
+    const content = document.getElementById('block-detail-content');
+    panel.style.display = 'flex';
+    selectedNodeData = d;
+
+    const isShared = d.data.is_shared;
+    const isRoot = d.data.is_root;
+    let statusTag = 'UNIQUE';
+    let statusClass = 'unique';
+    if (isRoot) { statusTag = 'ROOT'; statusClass = 'root'; }
+    if (isShared) { statusTag = 'SHARED'; statusClass = 'shared'; }
+
+    const tokens = (d.data.token_text || []).join(', ');
+    const decoded = d.data.token_text_decoded || '';
+    const pids = d.data.prompt_ids || [];
+    const promptTags = pids.map(pid =>
+        '<span class="bdp-prompt-tag" style="background:' + PROMPT_COLORS[pid % PROMPT_COLORS.length] + '">Prompt ' + (pid + 1) + '</span>'
+    ).join(' ');
+
+    let decodedHtml = '';
+    if (decoded) {
+        decodedHtml = `<div class="bdp-field">
+            <div class="bdp-field-label">Decoded Text</div>
+            <div class="bdp-field-value tokens">${escapeHtml(decoded)}</div>
+        </div>`;
+    }
+
+    let blockIndexHtml = '';
+    if (d.data.block_index !== undefined) {
+        blockIndexHtml = `<div class="bdp-field">
+            <div class="bdp-field-label">Block Index</div>
+            <div class="bdp-field-value">#${d.data.block_index}</div>
+        </div>`;
+    }
+
+    content.innerHTML = `
+        <div class="bdp-field">
+            <span class="bdp-tag ${statusClass}">${statusTag}</span>
+            ${isRoot ? '<span class="bdp-tag root">ROOT</span>' : ''}
+        </div>
+        ${blockIndexHtml}
+        <div class="bdp-field">
+            <div class="bdp-field-label">Block Hash</div>
+            <div class="bdp-field-value hash">${d.data.id}</div>
+        </div>
+        <div class="bdp-field">
+            <div class="bdp-field-label">Parent Hash</div>
+            <div class="bdp-field-value hash">${d.data.parent || 'NULL (root)'}</div>
+        </div>
+        <hr class="bdp-hr">
+        <div class="bdp-field">
+            <div class="bdp-field-label">Reference Count</div>
+            <div class="bdp-field-value">${d.data.ref_count}</div>
+        </div>
+        <div class="bdp-field">
+            <div class="bdp-field-label">Token IDs (${(d.data.token_text || []).length} tokens)</div>
+            <div class="bdp-field-value tokens">${tokens || 'N/A'}</div>
+        </div>
+        ${decodedHtml}
+        <hr class="bdp-hr">
+        <div class="bdp-field">
+            <div class="bdp-field-label">Used by Prompts</div>
+            <div class="bdp-field-value">${promptTags || 'N/A'}</div>
+        </div>
+    `;
+}
+
+function hideBlockDetail() {
+    const panel = document.getElementById('block-detail-panel');
+    panel.style.display = 'none';
+    selectedNodeData = null;
+    // Remove selection highlight
+    d3.selectAll('.hc-node.selected').classed('selected', false);
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Close button handler
+document.getElementById('btn-close-detail').addEventListener('click', hideBlockDetail);
+
 function renderTree(data) {
     const container = document.getElementById('hash-chain-viz');
     container.innerHTML = '';
+
+    // Hide detail panel on re-render
+    hideBlockDetail();
 
     const { nodes, edges, chains } = data;
     if (nodes.length === 0) {
@@ -279,6 +369,20 @@ function renderTree(data) {
         tooltip.style.top = (event.pageY + 15) + 'px';
     }).on('mouseout', function() {
         document.getElementById('pc-tooltip').style.display = 'none';
+    }).on('click', function(event, d) {
+        event.stopPropagation();
+        // Remove previous selection
+        d3.selectAll('.hc-node.selected').classed('selected', false);
+        // Select current node
+        const current = d3.select(this);
+        current.classed('selected', true);
+        // Show detail panel
+        showBlockDetail(d);
+    });
+
+    // Click on empty area to deselect
+    svg.on('click', function() {
+        hideBlockDetail();
     });
 
     // Initial transform: center the tree
@@ -315,6 +419,7 @@ document.getElementById('btn-mode-simulate').addEventListener('click', () => {
     document.getElementById('panel-live').style.display = 'none';
     document.getElementById('pc-stats').style.display = 'none';
     document.getElementById('hash-chain-viz').innerHTML = '<div class="pc-placeholder">Enter prompts and click Build Hash Chain</div>';
+    hideBlockDetail();
     const rowPrompt = document.getElementById('row-prompt-blocks');
     const rowSaved = document.getElementById('row-saved-blocks');
     if (rowPrompt) rowPrompt.style.display = '';
@@ -329,6 +434,7 @@ document.getElementById('btn-mode-live').addEventListener('click', () => {
     document.getElementById('panel-live').style.display = 'block';
     document.getElementById('pc-stats').style.display = 'none';
     document.getElementById('hash-chain-viz').innerHTML = '<div class="pc-placeholder">Connecting to KV events...</div>';
+    hideBlockDetail();
     const rowPrompt = document.getElementById('row-prompt-blocks');
     const rowSaved = document.getElementById('row-saved-blocks');
     if (rowPrompt) rowPrompt.style.display = 'none';

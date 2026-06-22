@@ -109,8 +109,19 @@
           <span class="legend-item"><span class="legend-dot root"></span> Root</span>
         </div>
       </div>
-      <div id="hash-chain-viz" class="hash-chain-viz">
-        <div class="pc-placeholder">Enter prompts and click Build Hash Chain</div>
+      <div class="pc-tree-wrapper">
+        <div id="hash-chain-viz" class="hash-chain-viz">
+          <div class="pc-placeholder">Enter prompts and click Build Hash Chain</div>
+        </div>
+        <div id="block-detail-panel" class="block-detail-panel" style="display:none">
+          <div class="bdp-header">
+            <h3>Block Detail</h3>
+            <button id="btn-close-detail" class="btn-close-detail">&times;</button>
+          </div>
+          <div id="block-detail-content" class="bdp-content">
+            <div class="bdp-placeholder">Click a block node to view details</div>
+          </div>
+        </div>
       </div>
       <div id="pc-tooltip" class="pc-tooltip" style="display:none"></div>
     </div>

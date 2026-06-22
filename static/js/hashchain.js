@@ -2,6 +2,8 @@
 // vLLM Monitor - Prefix Cache Hash Chain Visualizer
 // ============================================================
 
+function setText(id, text) { var e = document.getElementById(id); if(e) e.textContent = text; }
+
 const PROMPT_COLORS = ['#7c5cfc', '#22c55e', '#3b82f6', '#f97316', '#eab308',
                        '#ec4899', '#06b6d4', '#ef4444'];
 

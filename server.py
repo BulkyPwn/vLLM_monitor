@@ -695,10 +695,20 @@ async def simulate_prefix_cache(body: dict):
 async def live_hash_chain():
     """Get the real-time hash chain tree built from KV cache events."""
     if not kv_events_enabled:
-        return JSONResponse({
-            "error": "KV events not enabled. Start vLLM with "
-                     "--kv-events-config and run monitor with --kv-events-endpoint."
-        }, status_code=503)
+        reasons = []
+        if not HAS_ZMQ:
+            reasons.append("pyzmq not installed (pip install pyzmq)")
+        if not HAS_MSGSPEC:
+            reasons.append("msgspec not installed (pip install msgspec)")
+        if not KV_EVENTS_ENDPOINT:
+            reasons.append("--kv-events-endpoint not specified")
+        if reasons:
+            detail = "; ".join(reasons)
+        else:
+            detail = ("ZMQ connection may have failed. "
+                      "Check terminal for [kv-events] logs. "
+                      f"Endpoint: {KV_EVENTS_ENDPOINT}")
+        return JSONResponse({"error": f"KV events not enabled: {detail}"}, status_code=503)
     return JSONResponse(_build_live_hash_chain())
 
 

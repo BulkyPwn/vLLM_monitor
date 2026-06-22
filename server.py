@@ -651,38 +651,17 @@ def _build_live_hash_chain() -> dict:
             "is_shared": block["ref_count"] > 1,
             "token_text": block.get("token_ids", []),
         })
-        if block["parent"] and block["parent"] in kv_events_block_map:
-            parent_block = kv_events_block_map[block["parent"]]
-            nodes.append({
-                "id": block["parent"],
-                "parent": parent_block.get("parent"),
-                "ref_count": 0,
-                "is_root": parent_block.get("is_root", False),
-                "is_shared": False,
-                "token_text": parent_block.get("token_ids", []),
-            })
-
-    # Deduplicate
-    seen = {}
-    deduped = []
-    for n in nodes:
-        if n["id"] not in seen:
-            seen[n["id"]] = n
-        else:
-            seen[n["id"]]["ref_count"] = max(seen[n["id"]].get("ref_count", 0), n.get("ref_count", 0))
-            seen[n["id"]]["is_shared"] = seen[n["id"]].get("is_shared", False) or n.get("is_shared", False)
-    deduped = list(seen.values())
 
     edges = []
     for hkey, block in kv_events_block_map.items():
         if block["parent"] and block["parent"] in kv_events_block_map:
             edges.append({"source": block["parent"], "target": hkey})
 
-    total = len(deduped)
-    shared = sum(1 for n in deduped if n.get("is_shared"))
+    total = len(nodes)
+    shared = sum(1 for n in nodes if n.get("is_shared"))
 
     return {
-        "nodes": deduped,
+        "nodes": nodes,
         "edges": edges,
         "chains": [],
         "live": True,

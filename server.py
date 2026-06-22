@@ -608,7 +608,7 @@ def _extract_array(text: str, key: str) -> list:
     return [int(x.strip()) for x in m.group(1).split(",") if x.strip().lstrip("-").isdigit()]
 
 
-def get_live_hash_chain() -> dict:
+def _build_live_hash_chain() -> dict:
     """Build tree representation from live KV events data."""
     nodes = []
     for hkey, block in kv_events_block_map.items():
@@ -708,14 +708,14 @@ async def simulate_prefix_cache(body: dict):
     return JSONResponse(result)
 
 @app.get("/api/prefix-cache/live")
-async def get_live_hash_chain():
+async def live_hash_chain():
     """Get the real-time hash chain tree built from KV cache events."""
     if not kv_events_enabled:
         return JSONResponse({
             "error": "KV events not enabled. Start vLLM with "
                      "--kv-events-config and run monitor with --kv-events-endpoint."
         }, status_code=503)
-    return JSONResponse(get_live_hash_chain())
+    return JSONResponse(_build_live_hash_chain())
 
 
 @app.websocket("/ws")

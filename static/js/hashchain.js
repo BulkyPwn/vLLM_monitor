@@ -93,14 +93,13 @@ function renderStats(stats) {
 // ============================================================
 // D3 Tree Rendering
 // ============================================================
-let selectedNodeData = null;
+let selectedBlockId = null;   // use primitive string, survives DOM rebuild
 let savedZoomTransform = null;
 
-function showBlockDetail(d) {
-    const panel = document.getElementById('block-detail-panel');
+function renderBlockDetail(d) {
     const content = document.getElementById('block-detail-content');
+    const panel = document.getElementById('block-detail-panel');
     panel.style.display = 'flex';
-    selectedNodeData = d;
 
     const isShared = d.data.is_shared;
     const isRoot = d.data.is_root;
@@ -164,13 +163,16 @@ function showBlockDetail(d) {
     `;
 }
 
-function hideBlockDetail() {
-    const panel = document.getElementById('block-detail-panel');
-    panel.style.display = 'none';
-    selectedNodeData = null;
-    // Remove selection highlight
+function selectBlock(d) {
+    selectedBlockId = d.data.id;
     d3.selectAll('.hc-node.selected').classed('selected', false);
-    // Also hide LRU section
+    renderBlockDetail(d);
+}
+
+function hideBlockDetail() {
+    selectedBlockId = null;
+    document.getElementById('block-detail-panel').style.display = 'none';
+    d3.selectAll('.hc-node.selected').classed('selected', false);
     const lruSection = document.getElementById('lru-queue-section');
     if (lruSection) lruSection.style.display = 'none';
 }
@@ -195,7 +197,7 @@ function renderTree(data) {
             savedZoomTransform = d3.zoomTransform(zoomG.node());
         }
     }
-    const selectedBlockId = selectedNodeData ? selectedNodeData.data.id : null;
+    const prevSelectedId = selectedBlockId;
 
     container.innerHTML = '';
 
@@ -249,6 +251,7 @@ function renderTree(data) {
         .scaleExtent([0.3, 3])
         .on('zoom', (event) => {
             inner.attr('transform', event.transform);
+            savedZoomTransform = event.transform;
         });
     svg.call(zoom);
 
@@ -387,13 +390,9 @@ function renderTree(data) {
         document.getElementById('pc-tooltip').style.display = 'none';
     }).on('click', function(event, d) {
         event.stopPropagation();
-        // Remove previous selection
-        d3.selectAll('.hc-node.selected').classed('selected', false);
         // Select current node
-        const current = d3.select(this);
-        current.classed('selected', true);
-        // Show detail panel
-        showBlockDetail(d);
+        d3.select(this).classed('selected', true);
+        selectBlock(d);
     });
 
     // Click on empty area to deselect
@@ -413,11 +412,12 @@ function renderTree(data) {
     }
 
     // Re-select previously selected block if it still exists
-    if (selectedBlockId) {
+    if (prevSelectedId) {
         d3.selectAll('.hc-node').each(function(d) {
-            if (d.data.id === selectedBlockId) {
+            if (d.data.id === prevSelectedId) {
                 d3.select(this).classed('selected', true);
-                showBlockDetail(d);
+                renderBlockDetail(d);
+                selectedBlockId = prevSelectedId;  // re-confirm
             }
         });
     }
@@ -523,11 +523,9 @@ function renderLRUQueue(data) {
             const blockId = this.dataset.blockId;
             // Find and select the matching tree node
             d3.selectAll('.hc-node').each(function(d) {
-                const g = d3.select(this);
                 if (d.data.id === blockId) {
-                    d3.selectAll('.hc-node.selected').classed('selected', false);
-                    g.classed('selected', true);
-                    showBlockDetail(d);
+                    d3.select(this).classed('selected', true);
+                    selectBlock(d);
                 }
             });
         });

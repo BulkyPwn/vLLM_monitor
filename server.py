@@ -24,6 +24,12 @@ try:
 except ImportError:
     HAS_ZMQ = False
 
+try:
+    import msgspec
+    HAS_MSGSPEC = True
+except ImportError:
+    HAS_MSGSPEC = False
+
 app = FastAPI(title="vLLM Monitor")
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -467,6 +473,40 @@ def build_hash_chain(prompts: list, block_size: int = BLOCK_SIZE,
 
 
 # ---------------------------------------------------------------------------
+# KV Events msgpack types (mirrors vllm.distributed.kv_events)
+# ---------------------------------------------------------------------------
+
+if HAS_MSGSPEC:
+
+    class EventBatch(msgspec.Struct, array_like=True, omit_defaults=True, gc=False):
+        ts: float
+        events: list
+
+    class KVCacheEvent(msgspec.Struct, array_like=True, omit_defaults=True, gc=False, tag=True):
+        """Base class for all KV cache events."""
+
+    class BlockStored(KVCacheEvent):
+        block_hashes: list[int]
+        parent_block_hash: int | None = None
+        token_ids: list[int] = []
+        block_size: int = 16
+        lora_id: int | None = None
+
+    class BlockRemoved(KVCacheEvent):
+        block_hashes: list[int]
+
+    class AllBlocksCleared(KVCacheEvent):
+        pass
+
+    class KVEventBatch(EventBatch):
+        events: list[BlockStored | BlockRemoved | AllBlocksCleared]
+
+    _kv_decoder = msgspec.msgpack.Decoder(type=KVEventBatch)
+
+else:
+    _kv_decoder = None
+
+# ---------------------------------------------------------------------------
 # KV Events live hash chain (ZMQ subscriber)
 # ---------------------------------------------------------------------------
 
@@ -477,6 +517,9 @@ def _zmq_listener():
     """
     global kv_events_enabled
     if not HAS_ZMQ or not KV_EVENTS_ENDPOINT:
+        return
+    if not _kv_decoder:
+        print("[kv-events] msgspec not installed. Run: pip install msgspec")
         return
 
     print(f"[kv-events] Connecting to {KV_EVENTS_ENDPOINT} ...")
@@ -500,7 +543,7 @@ def _zmq_listener():
                 if len(parts) < 3:
                     continue
                 payload = parts[2]
-                _process_kv_event_bytes(payload)
+                _process_kv_event(payload)
         except Exception as e:
             print(f"[kv-events] Error: {e}")
             break
@@ -509,103 +552,44 @@ def _zmq_listener():
     ctx.term()
 
 
-def _process_kv_event_bytes(payload: bytes):
-    """Parse a msgpack-encoded KVEventBatch from vLLM.
-    Event structure (manually decoded without msgspec dependency):
-      - ts: float64
-      - events_count: uint32
-      - events: list of tagged unions
-    We use a simple heuristic decoder since the struct layout is stable.
-    """
-    import sys
+def _process_kv_event(payload: bytes):
+    """Decode msgpack KVEventBatch and update hash chain state."""
     global kv_events_block_map, kv_events_root_hashes
 
     try:
-        msg = json.loads(payload.decode(errors="replace"))
-    except Exception:
-        # Not JSON — try crude binary decode for BlockStored tokens
-        try:
-            text = payload.decode("utf-8", errors="replace")
-        except Exception:
-            return
+        batch: KVEventBatch = _kv_decoder.decode(payload)
+    except Exception as e:
+        print(f"[kv-events] Decode error: {e}")
+        return
 
-        # Extract numeric arrays from raw repr
-        token_ids = _extract_array(text, "token_ids")
-        block_hashes = _extract_array(text, "block_hashes")
-        parent_hash = None
-        block_size = 16
-
-        if "parent_block_hash" in text:
-            m = re.search(r"parent_block_hash[=:]\s*(-?\d+)", text)
-            if m:
-                parent_hash = m.group(1)
-
-        if "AllBlocksCleared" in text:
+    for event in batch.events:
+        if isinstance(event, AllBlocksCleared):
             kv_events_block_map.clear()
             kv_events_root_hashes.clear()
             print("[kv-events] All blocks cleared")
-            return
 
-        if not token_ids or not block_hashes:
-            return
-
-        for i, bh in enumerate(block_hashes):
-            hkey = str(bh)
-            if hkey not in kv_events_block_map:
-                kv_events_block_map[hkey] = {
-                    "id": hkey,
-                    "parent": str(parent_hash) if parent_hash is not None else None,
-                    "token_ids": token_ids,
-                    "ref_count": 0,
-                    "is_root": parent_hash is None,
-                }
-                if parent_hash is None:
-                    kv_events_root_hashes.add(hkey)
-            kv_events_block_map[hkey]["ref_count"] += 1
-        return
-
-    # JSON path (some newer vLLM versions use JSON)
-    if "AllBlocksCleared" in str(msg):
-        kv_events_block_map.clear()
-        kv_events_root_hashes.clear()
-        return
-
-    events = msg.get("events", [])
-    for evt in events:
-        etype = evt.get("type", evt.get("__type__", ""))
-        if "BlockStored" in etype:
-            bhs = evt.get("block_hashes", [])
-            parent = evt.get("parent_block_hash")
-            for bh in bhs:
+        elif isinstance(event, BlockStored):
+            parent = event.parent_block_hash
+            for bh in event.block_hashes:
                 hkey = str(bh)
                 if hkey not in kv_events_block_map:
                     kv_events_block_map[hkey] = {
                         "id": hkey,
                         "parent": str(parent) if parent is not None else None,
+                        "token_ids": event.token_ids if event.token_ids else [],
                         "ref_count": 0,
                         "is_root": parent is None,
                     }
                     if parent is None:
                         kv_events_root_hashes.add(hkey)
                 kv_events_block_map[hkey]["ref_count"] += 1
-        elif "BlockRemoved" in etype:
-            bhs = evt.get("block_hashes", [])
-            for bh in bhs:
+
+        elif isinstance(event, BlockRemoved):
+            for bh in event.block_hashes:
                 hkey = str(bh)
                 if hkey in kv_events_block_map:
                     kv_events_block_map[hkey]["ref_count"] = max(
                         0, kv_events_block_map[hkey]["ref_count"] - 1)
-        elif "AllBlocksCleared" in etype:
-            kv_events_block_map.clear()
-            kv_events_root_hashes.clear()
-
-
-def _extract_array(text: str, key: str) -> list:
-    """Extract a bracketed numeric array from text repr."""
-    m = re.search(rf"{re.escape(key)}\s*[=:]\s*\[([^\]]*)\]", text)
-    if not m:
-        return []
-    return [int(x.strip()) for x in m.group(1).split(",") if x.strip().lstrip("-").isdigit()]
 
 
 def _build_live_hash_chain() -> dict:

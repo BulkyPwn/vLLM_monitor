@@ -96,9 +96,14 @@ function renderStats(stats) {
 let selectedBlockId = null;   // use primitive string, survives DOM rebuild
 let savedZoomTransform = null;
 
-function renderBlockDetail(d) {
-    const content = document.getElementById('block-detail-content');
+function renderBlockDetail(d, force) {
     const panel = document.getElementById('block-detail-panel');
+    const content = document.getElementById('block-detail-content');
+
+    // Skip rebuild on live-poll restore when same block is already shown
+    if (!force && panel.style.display !== 'none' && selectedBlockId === d.data.id) {
+        return;
+    }
     panel.style.display = 'flex';
 
     const isShared = d.data.is_shared;
@@ -166,7 +171,7 @@ function renderBlockDetail(d) {
 function selectBlock(d) {
     selectedBlockId = d.data.id;
     d3.selectAll('.hc-node.selected').classed('selected', false);
-    renderBlockDetail(d);
+    renderBlockDetail(d, true);
 }
 
 function hideBlockDetail() {

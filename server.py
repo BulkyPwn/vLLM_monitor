@@ -7,13 +7,14 @@ Usage:
     pip install -r requirements.txt
     python server.py --vllm-url http://localhost:8000 --port 7860
 """
-import argparse, asyncio, hashlib, json, math, random, re, struct, time
+import argparse, asyncio, hashlib, json, logging, math, random, re, struct, time
 from collections import deque
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
 import httpx, uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client.parser import text_string_to_metric_families
@@ -32,6 +33,34 @@ except ImportError:
 
 app = FastAPI(title="vLLM Monitor")
 STATIC_DIR = Path(__file__).parent / "static"
+LOG_DIR = STATIC_DIR.parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+# --- Logger setup ---
+logger = logging.getLogger("vllm_monitor")
+logger.setLevel(logging.DEBUG)
+
+# Console handler
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+ch.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+logger.addHandler(ch)
+
+# File handler (rotating, 10 MB * 3 files)
+fh = RotatingFileHandler(LOG_DIR / "monitor.log", maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8")
+fh.setLevel(logging.DEBUG)
+fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s %(message)s"))
+logger.addHandler(fh)
+
+# Frontend log handler
+fe_handler = RotatingFileHandler(LOG_DIR / "frontend.log", maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8")
+fe_handler.setLevel(logging.DEBUG)
+fe_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+fe_logger = logging.getLogger("vllm_monitor.frontend")
+fe_logger.addHandler(fe_handler)
+fe_logger.propagate = False  # don't duplicate to main log
+# ---
+
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 VLLM_URL = "http://localhost:8000"
@@ -326,6 +355,7 @@ mock_gen = MockMetricsGenerator()
 
 async def scrape_loop():
     global latest_raw_metrics, vllm_connected, last_error
+    was_connected = False
     async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
         while True:
             try:
@@ -334,9 +364,15 @@ async def scrape_loop():
                 raw_text = resp.text
                 vllm_connected = True
                 last_error = ""
+                if not was_connected:
+                    logger.info(f"Connected to vLLM at {VLLM_URL}")
+                    was_connected = True
             except Exception as e:
+                if vllm_connected:
+                    logger.warning(f"Lost connection to vLLM: {e}")
                 vllm_connected = False
                 last_error = str(e)
+                was_connected = False
                 raw_text = mock_gen.generate()
             try:
                 parsed = parse_prometheus_text(raw_text)
@@ -519,21 +555,21 @@ def _zmq_listener():
     if not HAS_ZMQ or not KV_EVENTS_ENDPOINT:
         return
     if not _kv_decoder:
-        print("[kv-events] msgspec not installed. Run: pip install msgspec")
+        logger.error("[kv-events] msgspec not installed. Run: pip install msgspec")
         return
 
-    print(f"[kv-events] Connecting to {KV_EVENTS_ENDPOINT} ...")
+    logger.info(f"[kv-events] Connecting to {KV_EVENTS_ENDPOINT} ...")
     ctx = zmq.Context()
     sub = ctx.socket(zmq.SUB)
     try:
         sub.connect(KV_EVENTS_ENDPOINT)
     except Exception as e:
-        print(f"[kv-events] Failed to connect: {e}")
+        logger.error(f"[kv-events] Failed to connect: {e}")
         return
 
     sub.setsockopt_string(zmq.SUBSCRIBE, "kv-events")
     kv_events_enabled = True
-    print(f"[kv-events] Listening on topic 'kv-events'")
+    logger.info("[kv-events] Listening on topic 'kv-events'")
 
     while kv_events_enabled:
         try:
@@ -545,7 +581,7 @@ def _zmq_listener():
                 payload = parts[2]
                 _process_kv_event(payload)
         except Exception as e:
-            print(f"[kv-events] Error: {e}")
+            logger.error(f"[kv-events] Error: {e}")
             break
 
     sub.close()
@@ -559,14 +595,14 @@ def _process_kv_event(payload: bytes):
     try:
         batch: KVEventBatch = _kv_decoder.decode(payload)
     except Exception as e:
-        print(f"[kv-events] Decode error: {e}")
+        logger.error(f"[kv-events] Decode error: {e}")
         return
 
     for event in batch.events:
         if isinstance(event, AllBlocksCleared):
             kv_events_block_map.clear()
             kv_events_root_hashes.clear()
-            print("[kv-events] All blocks cleared")
+            logger.info("[kv-events] All blocks cleared")
 
         elif isinstance(event, BlockStored):
             parent = event.parent_block_hash
@@ -655,6 +691,22 @@ def _build_live_hash_chain() -> dict:
 @app.get("/")
 async def index():
     return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+
+@app.post("/api/log")
+async def frontend_log(request: Request):
+    """Receive frontend log entries and write to frontend.log."""
+    try:
+        body = await request.json()
+        level = body.get("level", "INFO")
+        message = body.get("message", "")
+        extra = body.get("extra", {})
+        log_msg = f"[{level}] {message}"
+        if extra:
+            log_msg += " | " + json.dumps(extra, default=str)
+        fe_logger.info(log_msg)
+    except Exception:
+        pass
+    return JSONResponse({"ok": True})
 
 @app.get("/api/status")
 async def get_status():
@@ -755,15 +807,15 @@ if __name__ == "__main__":
     POLL_INTERVAL = args.poll_interval
     KV_EVENTS_ENDPOINT = args.kv_events_endpoint
 
-    print(f"vLLM Monitor starting...")
-    print(f"  vLLM URL: {VLLM_URL}")
-    print(f"  Dashboard: http://localhost:{args.port}")
-    print(f"  Poll interval: {POLL_INTERVAL}s")
+    logger.info("vLLM Monitor starting...")
+    logger.info(f"  vLLM URL: {VLLM_URL}")
+    logger.info(f"  Dashboard: http://localhost:{args.port}")
+    logger.info(f"  Poll interval: {POLL_INTERVAL}s")
     if KV_EVENTS_ENDPOINT:
-        print(f"  KV Events: {KV_EVENTS_ENDPOINT}")
+        logger.info(f"  KV Events: {KV_EVENTS_ENDPOINT}")
     elif HAS_ZMQ:
-        print(f"  KV Events: disabled (use --kv-events-endpoint to enable)")
+        logger.info("  KV Events: disabled (use --kv-events-endpoint to enable)")
     if VLLM_URL == "http://localhost:8000":
-        print(f"  (Demo mode activates if vLLM is not reachable)")
+        logger.info("  (Demo mode activates if vLLM is not reachable)")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

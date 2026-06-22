@@ -1,5 +1,34 @@
 // vLLM Monitor - Metrics Dashboard
 ;(function() {
+  // --- Frontend log capture -> backend ---
+  var _origLog = console.log, _origError = console.error, _origWarn = console.warn;
+  var logQueue = [], logTimer = null;
+  function sendLogs() {
+    if (logQueue.length === 0) return;
+    var batch = logQueue.splice(0);
+    fetch('/api/log', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({level: 'INFO', message: batch.join('\n')}),
+    }).catch(function(){});
+  }
+  function queueLog(level, args) {
+    try {
+      var msg = Array.prototype.slice.call(args).map(function(a) {
+        if (typeof a === 'object') {
+          try { return JSON.stringify(a); } catch(e) { return String(a); }
+        }
+        return String(a);
+      }).join(' ');
+      logQueue.push('[' + level + '] ' + msg);
+      if (!logTimer) logTimer = setTimeout(function() { sendLogs(); logTimer = null; }, 2000);
+    } catch(e) {}
+  }
+  console.log   = function() { _origLog.apply(console, arguments); queueLog('LOG', arguments); };
+  console.error = function() { _origError.apply(console, arguments); queueLog('ERROR', arguments); };
+  console.warn  = function() { _origWarn.apply(console, arguments); queueLog('WARN', arguments); };
+  // ---
+
   var ws = null, charts = {}, prevTokens = {prompt:0,gen:0}, prevTime = Date.now()/1000;
   var MAX_POINTS = 60;
 
@@ -248,4 +277,10 @@
     var lo=document.getElementById('loading-overlay');
     if(lo){lo.style.display='none'}
   }, 10000);
+
+  // Flush logs on page unload
+  window.addEventListener('beforeunload', function() {
+    sendLogs();
+  });
+  console.log('vLLM Monitor page loaded');
 })();

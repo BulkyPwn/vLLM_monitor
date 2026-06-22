@@ -334,11 +334,21 @@ document.getElementById('btn-live-refresh').addEventListener('click', fetchLiveH
 async function fetchLiveHashChain() {
     try {
         const resp = await fetch('/api/prefix-cache/live');
-        const data = await resp.json();
+
+        // Try to parse JSON even on non-2xx (FastAPI returns JSON errors)
+        let data;
+        try {
+            data = await resp.json();
+        } catch (e) {
+            const text = await resp.text();
+            const statusEl = document.getElementById('live-status');
+            if (statusEl) statusEl.textContent = 'API error ' + resp.status + ': ' + text.substring(0, 100);
+            return;
+        }
 
         const statusEl = document.getElementById('live-status');
         if (data.error) {
-            if (statusEl) statusEl.textContent = 'Error: ' + data.error;
+            if (statusEl) statusEl.textContent = data.error;
             return;
         }
 
@@ -370,6 +380,6 @@ async function fetchLiveHashChain() {
     } catch (e) {
         console.error('Live fetch error:', e);
         const statusEl = document.getElementById('live-status');
-        if (statusEl) statusEl.textContent = 'Connection error - check KV events endpoint';
+        if (statusEl) statusEl.textContent = 'Connection error: ' + (e.message || e);
     }
 }

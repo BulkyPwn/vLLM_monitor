@@ -250,10 +250,10 @@ function renderTree(data) {
     // Tooltip on hover
     nodeG.on('mouseover', function(event, d) {
         const tooltip = document.getElementById('pc-tooltip');
-        const tokens = d.data.token_text.join(' ');
+        const tokens = (d.data.token_text || []).join(' ');
         const pids = (d.data.prompt_ids || []).map(p => `Prompt ${p + 1}`);
         tooltip.innerHTML = `
-            <div style="color:#a78bfa;margin-bottom:4px;">Block #${d.data.block_index}</div>
+            <div style="color:#a78bfa;margin-bottom:4px;">Block #${d.data.block_index || '?'}</div>
             <div style="margin-bottom:4px;"><strong>Hash:</strong> ${d.data.id}</div>
             <div style="margin-bottom:4px;"><strong>Tokens:</strong> ${tokens}</div>
             <div style="margin-bottom:4px;"><strong>Ref Count:</strong> ${d.data.ref_count}</div>

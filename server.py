@@ -570,7 +570,7 @@ def _zmq_listener():
     sub.setsockopt_string(zmq.SUBSCRIBE, "kv-events")
     kv_events_enabled = True
     logger.info("[kv-events] Listening on topic 'kv-events'")
-
+    msg_count = 0
     while kv_events_enabled:
         try:
             if sub.poll(500):
@@ -578,6 +578,9 @@ def _zmq_listener():
                 # parts: [topic_bytes, seq_bytes, payload_bytes]
                 if len(parts) < 3:
                     continue
+                msg_count += 1
+                if msg_count <= 3:
+                    logger.info(f"[kv-events] Received message #{msg_count}, payload size={len(parts[2])} bytes")
                 payload = parts[2]
                 _process_kv_event(payload)
         except Exception as e:
@@ -595,9 +598,11 @@ def _process_kv_event(payload: bytes):
     try:
         batch: KVEventBatch = _kv_decoder.decode(payload)
     except Exception as e:
-        logger.error(f"[kv-events] Decode error: {e}")
+        logger.error(f"[kv-events] Decode error: {e}, payload[:100]={payload[:100]!r}")
         return
 
+    stored = 0
+    removed = 0
     for event in batch.events:
         if isinstance(event, AllBlocksCleared):
             kv_events_block_map.clear()
@@ -619,6 +624,7 @@ def _process_kv_event(payload: bytes):
                     if parent is None:
                         kv_events_root_hashes.add(hkey)
                 kv_events_block_map[hkey]["ref_count"] += 1
+            stored += len(event.block_hashes)
 
         elif isinstance(event, BlockRemoved):
             for bh in event.block_hashes:
@@ -626,6 +632,11 @@ def _process_kv_event(payload: bytes):
                 if hkey in kv_events_block_map:
                     kv_events_block_map[hkey]["ref_count"] = max(
                         0, kv_events_block_map[hkey]["ref_count"] - 1)
+            removed += len(event.block_hashes)
+
+    if stored > 0 or removed > 0:
+        total = len(kv_events_block_map)
+        logger.debug(f"[kv-events] +{stored} stored, -{removed} removed, total={total} blocks")
 
 
 def _build_live_hash_chain() -> dict:
@@ -641,10 +652,14 @@ def _build_live_hash_chain() -> dict:
             "token_text": block.get("token_ids", []),
         })
         if block["parent"] and block["parent"] in kv_events_block_map:
+            parent_block = kv_events_block_map[block["parent"]]
             nodes.append({
                 "id": block["parent"],
+                "parent": parent_block.get("parent"),
                 "ref_count": 0,
-                "is_root": kv_events_block_map[block["parent"]]["is_root"],
+                "is_root": parent_block.get("is_root", False),
+                "is_shared": False,
+                "token_text": parent_block.get("token_ids", []),
             })
 
     # Deduplicate

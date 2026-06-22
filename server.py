@@ -35,7 +35,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 VLLM_URL = "http://localhost:8000"
-POLL_INTERVAL = 2.0
+POLL_INTERVAL = 5.0
 MAX_HISTORY = 300
 BLOCK_SIZE = 16
 KV_EVENTS_ENDPOINT = None   # "tcp://host:5557" to enable live KV events
@@ -746,7 +746,7 @@ if __name__ == "__main__":
     parser.add_argument("--vllm-url", default="http://localhost:8000", help="vLLM server URL")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind")
     parser.add_argument("--port", type=int, default=7860, help="Port to bind")
-    parser.add_argument("--poll-interval", type=float, default=2.0, help="Poll interval seconds")
+    parser.add_argument("--poll-interval", type=float, default=5.0, help="Poll interval seconds")
     parser.add_argument("--kv-events-endpoint", default=None,
                         help="vLLM ZMQ KV events endpoint (e.g. tcp://10.74.99.215:5557)")
     args = parser.parse_args()

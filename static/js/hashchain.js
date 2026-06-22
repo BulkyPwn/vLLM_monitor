@@ -72,7 +72,9 @@ async function simulate() {
         });
         const data = await resp.json();
         renderStats(data.stats);
+        savedZoomTransform = null;
         renderTree(data);
+        renderLRUQueue(data);
     } catch (e) {
         console.error('Simulation error:', e);
     }
@@ -92,6 +94,7 @@ function renderStats(stats) {
 // D3 Tree Rendering
 // ============================================================
 let selectedNodeData = null;
+let savedZoomTransform = null;
 
 function showBlockDetail(d) {
     const panel = document.getElementById('block-detail-panel');
@@ -167,6 +170,9 @@ function hideBlockDetail() {
     selectedNodeData = null;
     // Remove selection highlight
     d3.selectAll('.hc-node.selected').classed('selected', false);
+    // Also hide LRU section
+    const lruSection = document.getElementById('lru-queue-section');
+    if (lruSection) lruSection.style.display = 'none';
 }
 
 function escapeHtml(text) {
@@ -180,14 +186,24 @@ document.getElementById('btn-close-detail').addEventListener('click', hideBlockD
 
 function renderTree(data) {
     const container = document.getElementById('hash-chain-viz');
-    container.innerHTML = '';
 
-    // Hide detail panel on re-render
-    hideBlockDetail();
+    // Save current zoom transform and selected block before clearing
+    const svgEl = container.querySelector('svg');
+    if (svgEl) {
+        const zoomG = d3.select(svgEl).select('g');
+        if (!zoomG.empty()) {
+            savedZoomTransform = d3.zoomTransform(zoomG.node());
+        }
+    }
+    const selectedBlockId = selectedNodeData ? selectedNodeData.data.id : null;
+
+    container.innerHTML = '';
 
     const { nodes, edges, chains } = data;
     if (nodes.length === 0) {
         container.innerHTML = '<div class="pc-placeholder">No blocks generated</div>';
+        document.getElementById('block-detail-panel').style.display = 'none';
+        document.getElementById('lru-queue-section').style.display = 'none';
         return;
     }
 
@@ -385,12 +401,139 @@ function renderTree(data) {
         hideBlockDetail();
     });
 
-    // Initial transform: center the tree
-    const bbox = inner.node().getBBox();
-    const scale = Math.min(width / (bbox.width + 100), height / (bbox.height + 100), 1);
-    const tx = (width - bbox.width * scale) / 2 - bbox.x * scale;
-    const ty = (height - bbox.height * scale) / 2 - bbox.y * scale;
-    svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+    // Restore previous zoom transform, or center the tree on first render
+    if (savedZoomTransform) {
+        svg.call(zoom.transform, savedZoomTransform);
+    } else {
+        const bbox = inner.node().getBBox();
+        const scale = Math.min(width / (bbox.width + 100), height / (bbox.height + 100), 1);
+        const tx = (width - bbox.width * scale) / 2 - bbox.x * scale;
+        const ty = (height - bbox.height * scale) / 2 - bbox.y * scale;
+        svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+    }
+
+    // Re-select previously selected block if it still exists
+    if (selectedBlockId) {
+        d3.selectAll('.hc-node').each(function(d) {
+            if (d.data.id === selectedBlockId) {
+                d3.select(this).classed('selected', true);
+                showBlockDetail(d);
+            }
+        });
+    }
+}
+
+// ============================================================
+// LRU Eviction Queue
+// ============================================================
+function computeLRUOrder(nodes, edges, chains) {
+    // Simulate access order: process prompts sequentially.
+    // Each block "accessed" moves to the front (MRU).
+    // Result: head=MRU, tail=LRU.
+    const order = [];
+    const processed = new Set();
+
+    if (chains && chains.length > 0) {
+        // Process each prompt's blocks in order
+        for (const chain of chains) {
+            for (const h of (chain.block_hashes || [])) {
+                // Remove existing occurrence (cache-hit: move to front)
+                const idx = order.indexOf(h);
+                if (idx !== -1) {
+                    order.splice(idx, 1);
+                }
+                // Push to front (MRU)
+                order.push(h);
+                processed.add(h);
+            }
+        }
+    }
+
+    // Include any blocks not covered by chains (e.g. live mode without chains)
+    for (const node of nodes) {
+        if (!processed.has(node.id)) {
+            order.push(node.id);
+        }
+    }
+
+    return order; // [LRU, ..., MRU]
+}
+
+function renderLRUQueue(data) {
+    const section = document.getElementById('lru-queue-section');
+    const container = document.getElementById('lru-queue');
+    const nodes = data.nodes || [];
+
+    if (nodes.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+
+    // Build node lookup
+    const nodeMap = {};
+    nodes.forEach(n => { nodeMap[n.id] = n; });
+
+    // Compute LRU order
+    const lruOrder = computeLRUOrder(nodes, data.edges || [], data.chains || []);
+    const total = lruOrder.length;
+
+    // Head 10 + tail 10
+    const SHOW = 10;
+    const head = total <= SHOW * 2
+        ? lruOrder.slice(-total) // show all
+        : lruOrder.slice(-SHOW);   // last SHOW = MRU (head)
+    const tail = total <= SHOW * 2
+        ? []
+        : lruOrder.slice(0, SHOW); // first SHOW = LRU (tail)
+    const middleCount = total - head.length - tail.length;
+
+    // Build block HTML
+    function buildBlockHTML(id, cls) {
+        const node = nodeMap[id];
+        const hash = node ? (node.id || '').substring(0, 8) : id.substring(0, 8);
+        const isShared = node && node.is_shared;
+        const title = node
+            ? `Block ${node.id}\nRef: ${node.ref_count}\nShared: ${node.is_shared ? 'Yes' : 'No'}`
+            : id;
+        let classes = 'lru-block ' + cls;
+        if (isShared) classes += ' shared';
+        return `<span class="${classes}" title="${escapeHtml(title)}" data-block-id="${escapeHtml(id)}">${escapeHtml(hash)}</span>`;
+    }
+
+    let html = '';
+    // Tail section
+    if (tail.length > 0) {
+        html += tail.map(id => buildBlockHTML(id, 'tail')).join('');
+    }
+    // Ellipsis for middle
+    if (middleCount > 0) {
+        html += `<span class="lru-ellipsis">... ${middleCount} more ...</span>`;
+    }
+    // Head section
+    if (head.length > 0) {
+        html += head.map(id => buildBlockHTML(id, 'head')).join('');
+    }
+
+    container.innerHTML = html;
+
+    // Click handler: select the corresponding node in the tree
+    container.querySelectorAll('.lru-block').forEach(el => {
+        el.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const blockId = this.dataset.blockId;
+            // Find and select the matching tree node
+            d3.selectAll('.hc-node').each(function(d) {
+                const g = d3.select(this);
+                if (d.data.id === blockId) {
+                    d3.selectAll('.hc-node.selected').classed('selected', false);
+                    g.classed('selected', true);
+                    showBlockDetail(d);
+                }
+            });
+        });
+    });
+
+    section.style.display = 'block';
 }
 
 // Re-render on window resize
@@ -419,6 +562,7 @@ document.getElementById('btn-mode-simulate').addEventListener('click', () => {
     document.getElementById('panel-live').style.display = 'none';
     document.getElementById('pc-stats').style.display = 'none';
     document.getElementById('hash-chain-viz').innerHTML = '<div class="pc-placeholder">Enter prompts and click Build Hash Chain</div>';
+    savedZoomTransform = null;
     hideBlockDetail();
     const rowPrompt = document.getElementById('row-prompt-blocks');
     const rowSaved = document.getElementById('row-saved-blocks');
@@ -434,6 +578,7 @@ document.getElementById('btn-mode-live').addEventListener('click', () => {
     document.getElementById('panel-live').style.display = 'block';
     document.getElementById('pc-stats').style.display = 'none';
     document.getElementById('hash-chain-viz').innerHTML = '<div class="pc-placeholder">Connecting to KV events...</div>';
+    savedZoomTransform = null;
     hideBlockDetail();
     const rowPrompt = document.getElementById('row-prompt-blocks');
     const rowSaved = document.getElementById('row-saved-blocks');
@@ -491,6 +636,7 @@ async function fetchLiveHashChain() {
         };
         renderStats(liveStats);
         renderTree(data);
+        renderLRUQueue(data);
     } catch (e) {
         console.error('Live fetch error:', e);
         const statusEl = document.getElementById('live-status');

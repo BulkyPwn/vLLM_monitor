@@ -43,6 +43,7 @@ app = FastAPI(title="vLLM Monitor")
 STATIC_DIR = Path(__file__).parent / "static"
 LOG_DIR = STATIC_DIR.parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
+KV_EVENTS_LOG = LOG_DIR / "kv_events.jsonl"
 
 # Truncate logs on startup
 for _logfile in (LOG_DIR / "monitor.log", LOG_DIR / "frontend.log"):
@@ -620,6 +621,7 @@ def _process_kv_event(payload: bytes):
             kv_events_block_map.clear()
             kv_events_root_hashes.clear()
             logger.info("[kv-events] Event: AllBlocksCleared")
+            _write_kv_event_log({"type": "AllBlocksCleared"})
 
         elif isinstance(event, BlockStored):
             parent = event.parent_block_hash
@@ -645,6 +647,12 @@ def _process_kv_event(payload: bytes):
                         kv_events_root_hashes.add(hkey)
                 kv_events_block_map[hkey]["ref_count"] += 1
             stored += len(event.block_hashes)
+            _write_kv_event_log({
+                "type": "BlockStored",
+                "block_hashes": event.block_hashes,
+                "parent_block_hash": event.parent_block_hash,
+                "token_ids": event.token_ids,
+            })
 
         elif isinstance(event, BlockRemoved):
             logger.info(f"[kv-events] Event: BlockRemoved hashes={event.block_hashes}")
@@ -654,10 +662,87 @@ def _process_kv_event(payload: bytes):
                     kv_events_block_map[hkey]["ref_count"] = max(
                         0, kv_events_block_map[hkey]["ref_count"] - 1)
             removed += len(event.block_hashes)
+            _write_kv_event_log({
+                "type": "BlockRemoved",
+                "block_hashes": event.block_hashes,
+            })
 
     if stored > 0 or removed > 0:
         total = len(kv_events_block_map)
         logger.debug(f"[kv-events] +{stored} stored, -{removed} removed, total={total} blocks")
+
+
+def _write_kv_event_log(event_dict: dict):
+    """Append a KV event as a JSON line to kv_events.jsonl."""
+    try:
+        line = json.dumps(event_dict, ensure_ascii=False) + "\n"
+        with open(KV_EVENTS_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as e:
+        logger.warning(f"[kv-events] Failed to write event log: {e}")
+
+
+def _restore_from_kv_log():
+    """Read kv_events.jsonl and replay events to rebuild in-memory state."""
+    global kv_events_block_map, kv_events_root_hashes, kv_events_enabled
+
+    if not KV_EVENTS_LOG.exists():
+        return
+
+    logger.info("[kv-events] Restoring state from kv_events.jsonl ...")
+    restored = 0
+    try:
+        with open(KV_EVENTS_LOG, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                etype = event.get("type")
+                if etype == "AllBlocksCleared":
+                    kv_events_block_map.clear()
+                    kv_events_root_hashes.clear()
+                    restored += 1
+
+                elif etype == "BlockStored":
+                    parent = event.get("parent_block_hash")
+                    if parent is not None:
+                        parent = str(parent)
+                    token_ids = event.get("token_ids", [])
+                    for bh in event.get("block_hashes", []):
+                        hkey = str(bh)
+                        if hkey not in kv_events_block_map:
+                            kv_events_block_map[hkey] = {
+                                "id": hkey,
+                                "parent": parent,
+                                "token_ids": token_ids,
+                                "ref_count": 0,
+                                "is_root": parent is None,
+                            }
+                            if parent is None:
+                                kv_events_root_hashes.add(hkey)
+                        kv_events_block_map[hkey]["ref_count"] += 1
+                        restored += 1
+
+                elif etype == "BlockRemoved":
+                    for bh in event.get("block_hashes", []):
+                        hkey = str(bh)
+                        if hkey in kv_events_block_map:
+                            kv_events_block_map[hkey]["ref_count"] = max(
+                                0, kv_events_block_map[hkey]["ref_count"] - 1)
+                            restored += 1
+
+    except Exception as e:
+        logger.warning(f"[kv-events] Failed to restore from log: {e}")
+
+    total = len(kv_events_block_map)
+    if total > 0:
+        kv_events_enabled = True
+    logger.info(f"[kv-events] Restored {restored} event entries, total={total} blocks")
 
 
 def _build_live_hash_chain() -> dict:
@@ -842,6 +927,9 @@ if __name__ == "__main__":
                 logger.warning(f"Failed to load tokenizer: {e}")
         else:
             logger.warning("tokenizers library not installed. Run: pip install tokenizers")
+
+    # Restore KV events state from previous session log
+    _restore_from_kv_log()
 
     logger.info("vLLM Monitor starting...")
     logger.info(f"  vLLM URL: {VLLM_URL}")

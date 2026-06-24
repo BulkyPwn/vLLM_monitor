@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docker Monitor</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div id="loading-overlay"><div class="loading-spinner"></div><p>Connecting to Docker...</p><p class="loading-sub" id="loading-status">Initializing</p></div>
+
+<header class="header">
+  <div class="header-left">
+    <h1>Docker Monitor</h1>
+    <span id="status-badge" class="badge badge-demo">Demo Mode</span>
+  </div>
+  <div class="header-right">
+    <span id="demo-indicator" class="demo-indicator">DEMO MODE</span>
+    <span id="last-update" class="last-update">--</span>
+  </div>
+</header>
+
+<nav class="tab-nav">
+  <button class="tab-btn active" data-tab="containers">Containers</button>
+  <button class="tab-btn" data-tab="layers">Image Layers</button>
+</nav>
+
+<!-- Containers Tab -->
+<div id="tab-containers" class="tab-content active">
+  <!-- Summary Cards -->
+  <div class="metrics-grid" id="summary-grid"></div>
+
+  <!-- Resource Charts -->
+  <div class="chart-row">
+    <div class="chart-section half"><h3>Total CPU Usage</h3><div class="chart-container"><canvas id="chart-cpu"></canvas></div></div>
+    <div class="chart-section half"><h3>Total Memory Usage</h3><div class="chart-container"><canvas id="chart-mem"></canvas></div></div>
+  </div>
+
+  <!-- Container Table -->
+  <div class="chart-section">
+    <h2>Container List</h2>
+    <div class="table-wrapper">
+      <table id="container-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Image</th>
+            <th>State</th>
+            <th>Status</th>
+            <th>CPU %</th>
+            <th>Memory</th>
+            <th>Ports</th>
+            <th>PIDs</th>
+          </tr>
+        </thead>
+        <tbody id="container-tbody">
+          <tr><td colspan="8" class="table-empty">No containers found</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Image Layers Tab -->
+<div id="tab-layers" class="tab-content">
+  <div class="pc-layout">
+    <!-- Left panel: image selector + info -->
+    <div class="pc-input-panel">
+      <h2>Image Layer Explorer</h2>
+      <p class="pc-desc">Visualize Docker image layer dependency tree. Each layer is a filesystem delta produced by a Dockerfile instruction.</p>
+
+      <div class="pc-controls">
+        <label>Image:</label>
+        <input type="text" id="image-name" value="vllm/vllm-openai:v0.21.0rc1" style="width:200px;">
+        <button id="btn-load-image" class="btn-primary">Load Layers</button>
+        <button id="btn-load-demo" class="btn-secondary">Demo</button>
+      </div>
+
+      <!-- Layer Info Panel -->
+      <div id="layer-info-panel" style="display:none;">
+        <h3>Image Info</h3>
+        <div class="pc-stat-row"><span>Image ID:</span><strong id="li-image-id">--</strong></div>
+        <div class="pc-stat-row"><span>Created:</span><strong id="li-created">--</strong></div>
+        <div class="pc-stat-row"><span>OS / Arch:</span><strong id="li-os-arch">--</strong></div>
+        <div class="pc-stat-row"><span>Total Size:</span><strong id="li-size">--</strong></div>
+        <div class="pc-stat-row"><span>Total Layers:</span><strong id="li-layers">--</strong></div>
+        <div class="pc-stat-row" id="row-demo-notice" style="display:none">
+          <span style="color:var(--yellow);">NOTE:</span><strong style="color:var(--yellow);">Showing demo data</strong>
+        </div>
+      </div>
+
+      <div class="pc-controls" style="margin-top:12px;">
+        <label>Direction:</label>
+        <select id="layer-direction" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;">
+          <option value="horizontal">Horizontal</option>
+          <option value="vertical">Vertical</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Right panel: layer tree visualization -->
+    <div class="pc-viz-panel">
+      <div class="pc-viz-header">
+        <h2>Layer Dependency Tree</h2>
+        <div class="pc-legend">
+          <span class="legend-item"><span class="legend-dot root"></span> Root</span>
+          <span class="legend-item"><span class="legend-dot base"></span> Base</span>
+          <span class="legend-item"><span class="legend-dot leaf"></span> Leaf</span>
+        </div>
+      </div>
+      <div class="pc-tree-wrapper">
+        <div id="layer-viz" class="hash-chain-viz">
+          <div class="pc-placeholder">Select an image and click Load Layers</div>
+        </div>
+        <div id="layer-detail-panel" class="block-detail-panel" style="display:none">
+          <div class="bdp-header">
+            <h3>Layer Detail</h3>
+            <button id="btn-close-detail" class="btn-close-detail">&times;</button>
+          </div>
+          <div id="layer-detail-content" class="bdp-content">
+            <div class="bdp-placeholder">Click a layer node to view details</div>
+          </div>
+        </div>
+      </div>
+      <div id="layer-tooltip" class="pc-tooltip" style="display:none"></div>
+    </div>
+  </div>
+</div>
+
+<div id="error-banner" class="error-banner" style="display:none"></div>
+
+<script>
+window.onerror = function(msg, src, line) {
+  var ls = document.getElementById('loading-status');
+  if (ls && msg.indexOf('Chart') === -1 && msg.indexOf('d3') === -1) ls.textContent += ' | ' + msg;
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" onerror="document.getElementById('loading-status').textContent='CDN load failed. Check network.'"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.8.5/dist/d3.min.js" onerror="document.getElementById('loading-status').textContent='d3 CDN load failed.'"></script>
+<script src="/static/js/app.js"></script>
+<script src="/static/js/layers.js"></script>
+</body>
+</html>
